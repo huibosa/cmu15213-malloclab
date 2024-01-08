@@ -41,8 +41,8 @@ team_t team = {
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
-#define GET(p) (*(unsigned int*)(p))
-#define PUT(p, val) ((*(unsigned int*)(p)) = (val))
+#define GET(p) (*(uint32_t*)(p))
+#define PUT(p, val) ((*(uint32_t*)(p)) = (val))
 
 #define PACK(size, alloc) ((size) | (alloc))
 
@@ -61,10 +61,27 @@ team_t team = {
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
+uint32_t* heap_listp;
+
+static void* coalesce(void* bp);
+static void* extend_heap(size_t size);
+
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void) {
+  uint32_t* heap_listp = (uint32_t*)mem_sbrk(ALIGN(4 * WSIZE));
+
+  PUT(heap_listp, 0);                                // Padding
+  PUT(heap_listp + (1 * WSIZE), PACK(2 * WSIZE, 1)); // Prologue header
+  PUT(heap_listp + (2 * WSIZE), PACK(2 * WSIZE, 1)); // Prologue footer
+  PUT(heap_listp + (3 * WSIZE), PACK(0, 1));         // Epilogue
+  heap_listp += (2 * WSIZE);                         // Point to first block now
+
+  if (extend_heap(ALIGN(CHUNKSIZE)) == (void*)-1) {
+    return -1;
+  }
+
   return 0;
 }
 
@@ -106,4 +123,51 @@ void* mm_realloc(void* ptr, size_t size) {
   memcpy(newptr, oldptr, copySize);
   mm_free(oldptr);
   return newptr;
+}
+
+static void* extend_heap(size_t size) {
+  void* bp;
+  size_t asize = ALIGN(size + SIZE_T_SIZE);
+
+  if ((bp = mem_sbrk(asize)) == (void*)-1) {
+    return NULL;
+  }
+
+  PUT(HDRP(bp), PACK(asize, 0));
+  PUT(FTRP(bp), PACK(asize, 0));
+  PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); // Set new epilogue
+
+  return coalesce(bp);
+}
+
+static void* coalesce(void* bp) {
+  int prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+  int next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+  size_t size = GET_SIZE(HDRP(bp));
+
+  if (!prev_alloc && !next_alloc) {
+    return bp;
+  }
+
+  else if (prev_alloc && !next_alloc) {
+    size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
+  }
+
+  else if (!prev_alloc && next_alloc) {
+    size += GET_SIZE(FTRP(PREV_BLKP(bp)));
+    PUT(FTRP(bp), PACK(size, 0));
+    PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+    bp = PREV_BLKP(bp);
+  }
+
+  else {
+    size += GET_SIZE(HDRP(NEXT_BLKP(bp))) + GET_SIZE(FTRP(PREV_BLKP(bp)));
+    PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
+    PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+    bp = PREV_BLKP(bp);
+  }
+
+  return bp;
 }
